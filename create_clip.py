@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Happy-path clip workflow: create clip → audio → print phonemes/chunks → video."""
+"""Happy-path clip workflow: create clip → poll until complete → download wav/mp4."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ API_BASE = "https://akapulu.com/api"
 POLL_EVERY_S = 10
 HERE = Path(__file__).resolve().parent
 DOWNLOADS = HERE / "downloads"
-AUDIO_READY = "ready_to_render"
 VIDEO_READY = "complete"
 FAILED = "failed"
 DEFAULT_AVATAR_ID = "1f777f64-3758-4a7d-9cbc-c64ae654f7d1"  # Clara
@@ -66,54 +65,17 @@ def download(url: str, dest: Path) -> None:
     print(f"saved {dest}")
 
 
-def format_eta(seconds) -> str:
-    total = int(round(float(seconds or 0)))
-    if total < 0:
-        total = 0
-    hours, rem = divmod(total, 3600)
-    minutes, secs = divmod(rem, 60)
-    parts = []
-    if hours:
-        parts.append(f"{hours}h")
-    if minutes:
-        parts.append(f"{minutes}m")
-    if secs or not parts:
-        parts.append(f"{secs}s")
-    return " ".join(parts)
-
-
-def poll_take(clip_id: str, take_id: str, done: str) -> dict:
-    path = f"/clips/{clip_id}/takes/{take_id}/"
+def poll_clip(clip_id: str) -> dict:
+    path = f"/clips/{clip_id}/"
     while True:
-        take = api("GET", path)
-        status = take.get("status")
-        line = f"  status: {status}"
-        if status not in {FAILED, done}:
-            line += f"  ~{format_eta(take.get('estimated_seconds'))} left"
-        print(line)
+        clip = api("GET", path)
+        status = clip.get("status")
+        print(f"  status: {status}")
         if status == FAILED:
-            sys.exit(f"Take failed: {take.get('error')}")
-        if status == done:
-            return take
+            sys.exit(f"Clip failed: {clip.get('error')}")
+        if status == VIDEO_READY:
+            return clip
         time.sleep(POLL_EVERY_S)
-
-
-def print_chunks(take: dict) -> None:
-    print(f"phonemes:\n{take.get('phonemes') or '(none)'}\n")
-    print(f"audio_url:\n{take.get('audio_url')}\n")
-    chunks = take.get("chunk_prompts") or []
-    if not chunks:
-        print("No chunk prompts yet.")
-        return
-    for chunk in chunks:
-        index = chunk.get("index")
-        print(f"--- chunk {index} ({chunk.get('start')}s–{chunk.get('end')}s) ---")
-        print(chunk.get("text") or "")
-        print("face_prompt:")
-        print(chunk.get("face_prompt") or "")
-        print("upper_body_prompt:")
-        print(chunk.get("upper_body_prompt") or "")
-        print()
 
 
 def main() -> None:
@@ -126,52 +88,37 @@ def main() -> None:
     if not clips:
         print("  (none)")
     for clip in clips:
-        print(
-            f"  {clip['id']}  {clip['name']}  "
-            f"takes={clip.get('take_count')}  favorite={clip.get('favorite_id')}"
-        )
+        print(f"  {clip['id']}  {clip['name']}  status={clip.get('status')}")
     print()
 
     name = input("New clip name: ").strip()
-    if not name:
-        sys.exit("Clip name is required.")
-    clip = api("POST", "/clips/create/", {"name": name})
-    clip_id = clip["id"]
-    print(f"Created clip {clip_id}\n")
-
     text = input("Spoken line: ").strip()
     if not text:
         sys.exit("Spoken line is required.")
-    take = api(
-        "POST",
-        f"/clips/{clip_id}/takes/",
-        {"avatar_id": avatar_id, "text": text},
+    body = {"avatar_id": avatar_id, "text": text}
+    if name:
+        body["name"] = name
+    clip = api("POST", "/clips/create/", body)
+    clip_id = clip["id"]
+    print(f"Created clip {clip_id} (status {clip.get('status')})")
+    print(f"phonemes:\n{clip.get('phonemes') or '(none)'}\n")
+    print(
+        f"credits_charged={clip.get('credits_charged')} "
+        f"estimated_seconds={clip.get('estimated_seconds')}\n"
     )
-    take_id = take["id"]
-    print(f"Created take {take_id} (audio starting)\n")
 
-    print(f"Polling audio every {POLL_EVERY_S}s until {AUDIO_READY}...")
-    take = poll_take(clip_id, take_id, AUDIO_READY)
-    print_chunks(take)
-    audio_url = take.get("audio_url")
+    print(f"Polling every {POLL_EVERY_S}s until {VIDEO_READY}...")
+    clip = poll_clip(clip_id)
+    audio_url = clip.get("audio_url")
+    video_url = clip.get("video_url")
     if not audio_url:
         sys.exit("audio_url was empty.")
-    download(audio_url, DOWNLOADS / take_id / "audio.wav")
-
-    render = input("Render video? [Y/n] ").strip().lower()
-    if render in {"n", "no"}:
-        print("Stopped after audio.")
-        return
-
-    take = api("POST", f"/clips/{clip_id}/takes/{take_id}/render/", {})
-    print(f"Video starting (status {take.get('status')})\n")
-    print(f"Polling video every {POLL_EVERY_S}s until {VIDEO_READY}...")
-    take = poll_take(clip_id, take_id, VIDEO_READY)
-    print(f"video_url:\n{take.get('video_url')}")
-    video_url = take.get("video_url")
     if not video_url:
         sys.exit("video_url was empty.")
-    download(video_url, DOWNLOADS / take_id / "video.mp4")
+    print(f"audio_url:\n{audio_url}\n")
+    print(f"video_url:\n{video_url}\n")
+    download(audio_url, DOWNLOADS / clip_id / "audio.wav")
+    download(video_url, DOWNLOADS / clip_id / "video.mp4")
 
 
 if __name__ == "__main__":
