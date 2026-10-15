@@ -1,3 +1,5 @@
+**Deprecated.** This repository is not maintained. The current public example is [akapulu-examples](https://github.com/Akapulu/akapulu-examples).
+
 # Scripted clip workflow
 
 A small Python CLI that walks the Akapulu Labs clip API: list clips, create a clip from a script, print phonemes, poll until complete, then download audio and video.
